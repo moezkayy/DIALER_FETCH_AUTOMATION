@@ -9,6 +9,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 import yaml
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -135,11 +137,16 @@ def load_config(config_file: str = "config.yaml") -> Config:
     validation_cfg = yaml_config.get('validation', {})
     logging_cfg = yaml_config.get('logging', {})
 
+    eastern_today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+
+    start_date = dates.get('start_date') or eastern_today
+    end_date = dates.get('end_date') or eastern_today
+
     # Build configuration
     config = Config(
         # Dates
-        start_date=dates.get('start_date', '2025-01-09'),
-        end_date=dates.get('end_date', '2025-01-09'),
+        start_date=start_date,
+        end_date=end_date,
 
         # Paths
         base_output_dir=paths.get('base_output_dir', 'pipeline_runs'),

@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from config import Config
+from config_loader import Config
 from path_manager import PathManager
 
 
@@ -23,12 +23,29 @@ from path_manager import PathManager
 # ============================================================================
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
-    """Configure logging."""
+    """Configure logging with proper Unicode support."""
+    import sys
+
     log_level = getattr(logging, level.upper(), logging.INFO)
 
-    handlers = [logging.StreamHandler()]
+    # Create console handler with UTF-8 encoding for Windows
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+
+    # Try to set UTF-8 encoding on Windows
+    try:
+        if sys.platform == 'win32':
+            sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, Exception):
+        pass
+
+    handlers = [console_handler]
+
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
+        # File handler with UTF-8 encoding
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(log_level)
+        handlers.append(file_handler)
 
     logging.basicConfig(
         level=log_level,
@@ -521,7 +538,7 @@ class Transformer:
 # ============================================================================
 
 if __name__ == "__main__":
-    from config import load_config
+    from config_loader import load_config
 
     config = load_config()
     path_manager = PathManager(config.base_output_dir, config.start_date)

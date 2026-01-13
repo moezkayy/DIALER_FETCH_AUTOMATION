@@ -5,7 +5,6 @@ Fetch Module - Data Retrieval Only
 Responsible ONLY for fetching raw data from sources.
 No transformations. No validations. No business logic.
 Just get the data and save it to disk.
-12345
 """
 
 import time
@@ -33,12 +32,29 @@ from path_manager import PathManager
 # ============================================================================
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
-    """Configure logging."""
+    """Configure logging with proper Unicode support."""
+    import sys
+
     log_level = getattr(logging, level.upper(), logging.INFO)
 
-    handlers = [logging.StreamHandler()]
+    # Create console handler with UTF-8 encoding for Windows
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+
+    # Try to set UTF-8 encoding on Windows
+    try:
+        if sys.platform == 'win32':
+            sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, Exception):
+        pass
+
+    handlers = [console_handler]
+
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
+        # File handler with UTF-8 encoding
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(log_level)
+        handlers.append(file_handler)
 
     logging.basicConfig(
         level=log_level,
@@ -669,4 +685,6 @@ if __name__ == "__main__":
     setup_logging(path_manager.get_fetch_log(), config.log_level)
 
     fetcher = Fetcher(config, path_manager)
-    fetcher.fetch_all()
+    # fetcher.fetch_all()
+    cl1_fetch = CL1Fetcher(config, path_manager)
+    cl1_fetch.fetch()
