@@ -14,6 +14,8 @@ Usage:
     python main.py --config custom.yaml  # Run with custom config
     python main.py --date 2026-01-10  # Override date
     python main.py --help             # Show help
+
+made by moez khan
 """
 
 import sys

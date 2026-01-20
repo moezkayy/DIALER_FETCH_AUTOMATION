@@ -5,6 +5,7 @@ Fetch Module - Data Retrieval Only
 Responsible ONLY for fetching raw data from sources.
 No transformations. No validations. No business logic.
 Just get the data and save it to disk.
+made by moez khan
 """
 
 import time

@@ -4,6 +4,8 @@ Path Manager - Centralized Path Control
 ========================================
 Responsible only for constructing and managing file paths.
 No business logic. No data processing. Just paths.
+made by moez khan
+
 """
 
 from pathlib import Path
