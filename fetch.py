@@ -11,17 +11,22 @@ import time
 import logging
 import re
 import io
+import glob
+import asyncio
 from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 from datetime import datetime
+from random import randint
 
 import yaml
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
 from requests.auth import HTTPBasicAuth
 from playwright.sync_api import sync_playwright, Page, Download
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 from config_loader import Config, load_config
 from path_manager import PathManager
@@ -159,6 +164,22 @@ def validate_content(content: bytes, min_lines: int = 2) -> Tuple[bool, str]:
         return False, 'validation_error'
 
 
+def time_to_seconds(duration):
+    """Convert time string to seconds"""
+    try:
+        parts = duration.split(':')
+        if len(parts) == 3:
+            h, m, s = map(int, parts)
+            return h * 3600 + m * 60 + s
+        elif len(parts) == 2:
+            m, s = map(int, parts)
+            return m * 60 + s
+        else:
+            return int(duration)
+    except:
+        return 0
+
+
 # ============================================================================
 # WORKDIALERS FETCHER
 # ============================================================================
@@ -214,87 +235,180 @@ class WorkdialersFetcher:
 
         self.logger.info(f"⬇️  Fetching: {name} (work{work_number})")
 
-        # Try Playwright first (unless skipped)
+        # Check if Playwright should be skipped for this dialer
         skip_playwright = work_number in self.config.workdialers.skip_playwright_for_dialers
 
-        if not skip_playwright:
-            success = self._try_playwright(work_number, base_url, username, password)
-            if success:
-                return
-        else:
-            self.logger.info(f"   ⏭️  Skipping Playwright for dialer {work_number}")
-
-        # Fallback to requests
-        self._try_requests(work_number, base_url, username, password)
-
-    def _try_playwright(self, work_number: str, base_url: str,
-                        username: str, password: str) -> bool:
-        """Try fetching using Playwright."""
-        max_attempts = self.config.workdialers.max_playwright_attempts
+        # Alternating retry pattern
+        max_attempts = max(
+            self.config.workdialers.max_playwright_attempts,
+            self.config.workdialers.max_requests_attempts
+        )
 
         for attempt in range(1, max_attempts + 1):
-            self.logger.info(f"   🎭 Playwright attempt {attempt}/{max_attempts}")
+            # Try Playwright on odd attempts (1, 3, 5...)
+            if attempt % 2 == 1 and not skip_playwright:
+                playwright_attempt_num = (attempt + 1) // 2
+                if playwright_attempt_num <= self.config.workdialers.max_playwright_attempts:
+                    self.logger.info(
+                        f"   🎭 Playwright attempt {playwright_attempt_num}/{self.config.workdialers.max_playwright_attempts}")
+                    result = self._try_playwright_single(work_number, base_url, username, password)
 
-            try:
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=self.config.headless_browser)
-                    context = browser.new_context(
-                        http_credentials={"username": username, "password": password},
-                        accept_downloads=True
-                    )
-                    page = context.new_page()
+                    if result == 'success':
+                        return  # Data downloaded successfully
+                    elif result == 'no_data':
+                        self.logger.info(f"   ⏭️  No data for this dialer, moving to next")
+                        return  # No data exists, stop trying
+                    # If result == 'error', continue to next attempt
 
-                    url = f"{base_url}/call_report_export.php"
-                    page.goto(url, timeout=self.config.playwright_timeout_ms)
-                    time.sleep(2)
+            # Try requests on even attempts (2, 4, 6...)
+            elif attempt % 2 == 0:
+                requests_attempt_num = attempt // 2
+                if requests_attempt_num <= self.config.workdialers.max_requests_attempts:
+                    self.logger.info(
+                        f"   📤 Requests attempt {requests_attempt_num}/{self.config.workdialers.max_requests_attempts}")
+                    result = self._try_requests_single(work_number, base_url, username, password)
 
-                    # Fill form and download
-                    download = self._fill_and_submit_form(page)
+                    if result == 'success':
+                        return  # Data downloaded successfully
+                    elif result == 'no_data':
+                        self.logger.info(f"   ⏭️  No data for this dialer, moving to next")
+                        return  # No data exists, stop trying
+                    # If result == 'error', continue to next attempt
 
-                    if download:
-                        temp_path = self.path_manager.get_raw_workdialer_call_report(
-                            str(work_number), "_temp"
-                        )
-                        download.save_as(temp_path)
-
-                        content = temp_path.read_bytes()
-                        is_valid, reason = validate_content(content, self.config.min_content_lines)
-
-                        if is_valid:
-                            final_path = self.path_manager.get_raw_workdialer_call_report(
-                                str(work_number)
-                            )
-                            if final_path.exists():
-                                final_path.unlink()
-                            temp_path.rename(final_path)
-
-                            size_kb = final_path.stat().st_size / 1024
-                            self.logger.info(f"   ✅ Saved: {final_path.name} ({size_kb:.1f} KB)")
-
-                            page.close()
-                            context.close()
-                            browser.close()
-                            return True
-                        else:
-                            temp_path.unlink()
-                            if reason == 'no_data':
-                                self.logger.info(f"   ℹ️  No data available")
-                                page.close()
-                                context.close()
-                                browser.close()
-                                return False
-
-                    page.close()
-                    context.close()
-                    browser.close()
-
-            except Exception as e:
-                self.logger.warning(f"   ⚠️  Playwright error: {e}")
-
+            # Wait before next attempt (except on last attempt)
             if attempt < max_attempts:
                 time.sleep(self.config.workdialers.retry_wait_seconds)
 
-        return False
+        self.logger.warning(f"   ❌ All attempts failed for {name}")
+
+    def _try_playwright_single(self, work_number: str, base_url: str,
+                               username: str, password: str) -> str:
+        """
+        Single Playwright attempt.
+
+        Returns:
+            'success' - Data downloaded successfully
+            'no_data' - Confirmed no data exists for this date
+            'error' - Attempt failed, should retry
+        """
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=self.config.headless_browser)
+                context = browser.new_context(
+                    http_credentials={"username": username, "password": password},
+                    accept_downloads=True
+                )
+                page = context.new_page()
+
+                url = f"{base_url}/call_report_export.php"
+                page.goto(url, timeout=self.config.playwright_timeout_ms)
+                time.sleep(2)
+
+                # Fill form and download
+                download = self._fill_and_submit_form(page)
+
+                if download:
+                    temp_path = self.path_manager.get_raw_workdialer_call_report(
+                        str(work_number), "_temp"
+                    )
+                    download.save_as(temp_path)
+
+                    content = temp_path.read_bytes()
+                    is_valid, reason = validate_content(content, self.config.min_content_lines)
+
+                    if is_valid:
+                        final_path = self.path_manager.get_raw_workdialer_call_report(
+                            str(work_number)
+                        )
+                        if final_path.exists():
+                            final_path.unlink()
+                        temp_path.rename(final_path)
+
+                        size_kb = final_path.stat().st_size / 1024
+                        self.logger.info(f"   ✅ Saved: {final_path.name} ({size_kb:.1f} KB)")
+
+                        page.close()
+                        context.close()
+                        browser.close()
+                        return 'success'
+                    else:
+                        temp_path.unlink()
+                        if reason == 'no_data':
+                            self.logger.info(f"   ℹ️  No data available")
+                            page.close()
+                            context.close()
+                            browser.close()
+                            return 'no_data'  # Confirmed no data
+
+                page.close()
+                context.close()
+                browser.close()
+
+        except Exception as e:
+            self.logger.warning(f"   ⚠️  Playwright error: {e}")
+
+        return 'error'  # Failed, should retry
+
+    def _try_requests_single(self, work_number: str, base_url: str,
+                             username: str, password: str) -> str:
+        """
+        Single requests attempt.
+
+        Returns:
+            'success' - Data downloaded successfully
+            'no_data' - Confirmed no data exists for this date
+            'error' - Attempt failed, should retry
+        """
+        url = f"{base_url}/call_report_export.php"
+
+        params = {
+            'DB': '',
+            'run_export': '1',
+            'query_date': self.config.start_date,
+            'end_date': self.config.end_date,
+            'date_field': 'call_date',
+            'header_row': 'YES',
+            'export_fields': 'STANDARD',
+            'group[]': '---ALL---',
+            'list_id[]': '---ALL---',
+            'status[]': '---ALL---',
+            'user_group[]': '---ALL---',
+            'campaign[]': '---ALL---',
+            'SUBMIT': 'SUBMIT'
+        }
+
+        if should_search_archived_data(self.config.start_date):
+            params['search_archived_data'] = 'checked'
+            self.logger.info(f"   📦 Including 'search_archived_data' parameter")
+
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                auth=HTTPBasicAuth(username, password),
+                timeout=self.config.request_timeout_seconds
+            )
+            response.raise_for_status()
+
+            content = response.content
+            is_valid, reason = validate_content(content, self.config.min_content_lines)
+
+            if is_valid:
+                filepath = self.path_manager.get_raw_workdialer_call_report(str(work_number))
+                filepath.write_bytes(content)
+                size_kb = len(content) / 1024
+                self.logger.info(f"   ✅ Saved: {filepath.name} ({size_kb:.1f} KB)")
+                return 'success'
+            elif reason == 'no_data':
+                self.logger.info(f"   ℹ️  No data available")
+                return 'no_data'  # Confirmed no data
+            else:
+                self.logger.warning(f"   ⚠️  Invalid content: {reason}")
+                return 'error'  # Invalid response, should retry
+
+        except Exception as e:
+            self.logger.warning(f"   ⚠️  Requests error: {e}")
+            return 'error'  # Failed, should retry
 
     def _fill_and_submit_form(self, page: Page) -> Optional[Download]:
         """Fill form and submit to get download."""
@@ -357,64 +471,6 @@ class WorkdialersFetcher:
             self.logger.error(f"   ❌ Form submission failed: {e}")
             return None
 
-    def _try_requests(self, work_number: str, base_url: str,
-                      username: str, password: str):
-        """Try fetching using requests library."""
-        max_attempts = self.config.workdialers.max_requests_attempts
-        url = f"{base_url}/call_report_export.php"
-
-        params = {
-            'DB': '',
-            'run_export': '1',
-            'query_date': self.config.start_date,
-            'end_date': self.config.end_date,
-            'date_field': 'call_date',
-            'header_row': 'YES',
-            'export_fields': 'STANDARD',
-            'group[]': '---ALL---',
-            'list_id[]': '---ALL---',
-            'status[]': '---ALL---',
-            'user_group[]': '---ALL---',
-            'campaign[]': '---ALL---',
-            'SUBMIT': 'SUBMIT'
-        }
-
-        if should_search_archived_data(self.config.start_date):
-            params['search_archived_data'] = 'checked'
-            self.logger.info(f"   📦 Including 'search_archived_data' parameter")
-
-        for attempt in range(1, max_attempts + 1):
-            self.logger.info(f"   📤 Requests attempt {attempt}/{max_attempts}")
-
-            try:
-                response = requests.get(
-                    url,
-                    params=params,
-                    auth=HTTPBasicAuth(username, password),
-                    timeout=self.config.request_timeout_seconds
-                )
-                response.raise_for_status()
-
-                content = response.content
-                is_valid, reason = validate_content(content, self.config.min_content_lines)
-
-                if is_valid:
-                    filepath = self.path_manager.get_raw_workdialer_call_report(str(work_number))
-                    filepath.write_bytes(content)
-                    size_kb = len(content) / 1024
-                    self.logger.info(f"   ✅ Saved: {filepath.name} ({size_kb:.1f} KB)")
-                    return
-                elif reason == 'no_data':
-                    self.logger.info(f"   ℹ️  No data available")
-                    return
-                else:
-                    self.logger.warning(f"   ⚠️  Invalid content: {reason}")
-
-            except Exception as e:
-                self.logger.warning(f"   ⚠️  Requests error: {e}")
-
-            if attempt < max_attempts:
-                time.sleep(self.config.workdialers.retry_wait_seconds)
 
 
 # ============================================================================
@@ -463,6 +519,74 @@ class CL1Fetcher:
 
         except Exception as e:
             self.logger.error(f"   ❌ Failed to fetch CL1: {e}")
+
+
+# ============================================================================
+# CL2 FETCHER
+# ============================================================================
+
+class CL2Fetcher:
+    """Fetches call reports from CL2 dialer."""
+
+    def __init__(self, config: Config, path_manager: PathManager):
+        self.config = config
+        self.path_manager = path_manager
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def fetch(self):
+        """Fetch CL2 data."""
+        if not self.config.cl2.enabled:
+            self.logger.info("CL2 fetching disabled")
+            return
+
+        self.logger.info("⬇️  Fetching CL2 data")
+
+        max_attempts = 6
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.logger.info(f"   📤 Attempt {attempt}/{max_attempts}")
+
+                # Extract hostname from URL
+                url_base = self.config.cl2.url.replace("https://", "").replace("http://", "")
+
+                export_link = (
+                    f"https://{self.config.cl2.username}:{self.config.cl2.password}@"
+                    f"{self.config.cl2.url.lstrip('https://').lstrip('http://')}"
+                    f"/call_report_export.php?DB=&run_export=1"
+                    f"&ivr_export=&query_date={self.config.start_date}"
+                    f"&end_date={self.config.start_date}"
+                    f"&date_field=call_date&header_row=YES&rec_fields=NONE"
+                    f"&call_notes=NO&export_fields=STANDARD"
+                    f"&campaign%5B%5D=---ALL---&group%5B%5D=---NONE---"
+                    f"&list_id%5B%5D=---ALL---&status%5B%5D=---ALL---"
+                    f"&user_group%5B%5D=---ALL---&SUBMIT=SUBMIT"
+                )
+
+                response = requests.get(
+                    export_link,
+                    timeout=self.config.request_timeout_seconds
+                )
+                response.raise_for_status()
+
+                # Parse and clean the data
+                df = pd.read_csv(io.StringIO(response.text), delimiter="\t")
+                df = df[df["user"] != "VDAD"]
+                df["user"] = df["user"].str.split("_").str[0]
+                df = df.sort_values(by="length_in_sec", ascending=False)
+
+                # Save the cleaned data
+                output_file = self.path_manager.get_raw_cl2_file()
+                df.to_csv(output_file, index=False)
+
+                self.logger.info(f"   ✅ Saved: {output_file.name} ({len(df)} rows)")
+                return
+
+            except Exception as e:
+                self.logger.warning(f"   ⚠️  Attempt {attempt} failed: {e}")
+                if attempt < max_attempts:
+                    time.sleep(5)
+                else:
+                    self.logger.error(f"   ❌ Failed to fetch CL2 after {max_attempts} attempts")
 
 
 # ============================================================================
@@ -629,6 +753,219 @@ class ThreeWayFetcher:
 
 
 # ============================================================================
+# OMNI FETCHER
+# ============================================================================
+
+class OmniFetcher:
+    """Fetches call reports from Omni using async Playwright."""
+
+    def __init__(self, config: Config, path_manager: PathManager):
+        self.config = config
+        self.path_manager = path_manager
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def fetch(self):
+        """Fetch Omni data (synchronous wrapper)."""
+        if not self.config.omni.enabled:
+            self.logger.info("Omni fetching disabled")
+            return
+
+        self.logger.info("⬇️  Fetching Omni data")
+
+        # Run async fetch in event loop
+        try:
+            asyncio.run(self._fetch_async())
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to fetch Omni: {e}")
+
+    async def _fetch_async(self):
+        """Async method to fetch Omni data."""
+        max_attempts = self.config.omni.max_attempts
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.logger.info(f"   🎭 Attempt {attempt}/{max_attempts}")
+
+                # Setup download directory
+                download_dir = self.path_manager.get_omni_download_dir()
+                download_dir.mkdir(parents=True, exist_ok=True)
+
+                # Download the file
+                result = await self._download_agent_performance(
+                    str(download_dir),
+                    self._convert_date_format(self.config.start_date)
+                )
+
+                if result == 'File Downloaded':
+                    # Clean and process the data
+                    fetch_pattern = str(download_dir / "*.xls")
+                    df = self._clean_omni_data(fetch_pattern)
+
+                    if df is not None and not df.empty:
+                        output_file = self.path_manager.get_raw_omni_file()
+                        df.to_csv(output_file, index=False)
+                        self.logger.info(f"   ✅ Saved: {output_file.name} ({len(df)} rows)")
+                        return
+                    else:
+                        self.logger.warning(f"   ⚠️  No data extracted from download")
+
+            except Exception as e:
+                self.logger.warning(f"   ⚠️  Attempt {attempt} failed: {e}")
+                if attempt < max_attempts:
+                    await asyncio.sleep(5)
+                else:
+                    self.logger.error(f"   ❌ Failed after {max_attempts} attempts")
+
+    def _convert_date_format(self, date_str: str) -> str:
+        """Convert YYYY-MM-DD to MM/DD/YYYY format."""
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            return dt.strftime("%m/%d/%Y")
+        except:
+            return date_str
+
+    async def _download_agent_performance(self, d_path: str, date_to_find: str):
+        """Download agent performance data using async Playwright."""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.config.headless_browser,
+                downloads_path=d_path
+            )
+
+            context = await browser.new_context(accept_downloads=True)
+            page = await context.new_page()
+
+            try:
+                # Navigate to login page
+                await page.goto(self.config.omni.url)
+                await asyncio.sleep(randint(3, 5))
+
+                # Login
+                await page.fill('input#Usuario', self.config.omni.username)
+                await page.fill('input#Contrasenya', self.config.omni.password)
+                await asyncio.sleep(1)
+
+                # Wait for navigation after login
+                async with page.expect_navigation():
+                    await page.click('button#conectar')
+                await asyncio.sleep(randint(4, 6))
+
+                # Wait for page to be fully loaded
+                await page.wait_for_load_state('networkidle')
+
+                # Navigate to Reports page
+                base_url = self.config.omni.url.replace('/Manager/Home/Login', '')
+                await page.goto(f'{base_url}/Manager/Reports/ReportList/100000001')
+                await page.wait_for_load_state('networkidle')
+                await asyncio.sleep(randint(2, 3))
+
+                # Click on "Transactions list" report
+                await page.click('tr#Report100000077 a')
+                await asyncio.sleep(1)
+
+                # Click agent name button
+                await page.click('input[name="NomAgent"]')
+                await asyncio.sleep(1)
+
+                # Click first input in titles table
+                await page.click('table#tblTitles input')
+                await asyncio.sleep(1)
+
+                # Click first input in fields table
+                await page.click('table#tblFieldsToSelect input')
+                await asyncio.sleep(1)
+
+                # Click Accept button
+                await page.wait_for_selector('span.ui-button-text:has-text("Accept")', state='visible')
+                await page.locator('span.ui-button-text', has_text="Accept").click()
+                await asyncio.sleep(1)
+
+                # Fill date fields
+                await page.fill('input[name="fDesde"]', '')
+                await page.fill('input[name="fDesde"]', date_to_find)
+                await page.fill('input[name="fHasta"]', '')
+                await page.fill('input[name="fHasta"]', date_to_find)
+                await asyncio.sleep(1)
+
+                # Scroll to download button and click
+                download_btn = page.locator('a#btnAbrirExcel')
+                await download_btn.scroll_into_view_if_needed()
+                await asyncio.sleep(1)
+
+                # Wait for download
+                async with page.expect_download() as download_info:
+                    await download_btn.click()
+                download = await download_info.value
+
+                # Save download
+                import os
+                await download.save_as(os.path.join(d_path, download.suggested_filename))
+                await asyncio.sleep(5)
+
+                self.logger.info(f"   📥 Downloaded: {download.suggested_filename}")
+                return 'File Downloaded'
+
+            finally:
+                await browser.close()
+
+    def _clean_omni_data(self, fetch_path: str) -> Optional[pd.DataFrame]:
+        """Clean and process downloaded Omni data."""
+        try:
+            files = glob.glob(fetch_path)
+            if not files:
+                self.logger.warning(f"   ⚠️  No files found matching: {fetch_path}")
+                return None
+
+            max_file = max(files, key=lambda f: Path(f).stat().st_ctime)
+            self.logger.info(f"   🧹 Processing: {Path(max_file).name}")
+
+            with open(max_file, "rb") as my_file:
+                bs_obj = BeautifulSoup(my_file, 'lxml')
+                table = bs_obj.find('table').find_all('tr')
+
+                records = []
+                for tr in table[1:]:
+                    td = tr.find_all('td')
+                    if len(td) < 17:
+                        continue
+
+                    id_ = td[0].text.strip()
+                    camp = td[1].text.strip()
+                    date_time = td[2].text.strip()
+                    dis = td[4].text.strip()
+                    phone = td[12].text.strip()
+                    closer = td[14].text.strip()
+                    audio = td[16].text.strip()
+                    duration = td[9].text.strip()
+                    source = td[12].text.strip()
+                    did = td[13].text.strip()
+
+                    if source in ['nan', '', 'None']:
+                        source = 'avoid'
+
+                    a_duration = time_to_seconds(duration)
+
+                    records.append({
+                        'id': id_,
+                        'camp': camp,
+                        'date/time': date_time,
+                        'status': dis,
+                        'phone': phone,
+                        'closer': closer,
+                        'audio': audio,
+                        'duration': a_duration,
+                        'source': source,
+                        'did': did
+                    })
+
+                return pd.DataFrame(records)
+
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to clean Omni data: {e}")
+            return None
+
+
+# ============================================================================
 # MAIN FETCH ORCHESTRATOR
 # ============================================================================
 
@@ -659,6 +996,11 @@ class Fetcher:
             fetcher = CL1Fetcher(self.config, self.path_manager)
             fetcher.fetch()
 
+        # Fetch CL2
+        if self.config.cl2.enabled:
+            fetcher = CL2Fetcher(self.config, self.path_manager)
+            fetcher.fetch()
+
         # Fetch JT
         if self.config.jt.enabled:
             fetcher = JTFetcher(self.config, self.path_manager)
@@ -667,6 +1009,11 @@ class Fetcher:
         # Fetch ThreeWay
         if self.config.threeway.enabled:
             fetcher = ThreeWayFetcher(self.config, self.path_manager)
+            fetcher.fetch()
+
+        # Fetch Omni
+        if self.config.omni.enabled:
+            fetcher = OmniFetcher(self.config, self.path_manager)
             fetcher.fetch()
 
         self.logger.info("=" * 70)
@@ -685,6 +1032,7 @@ if __name__ == "__main__":
     setup_logging(path_manager.get_fetch_log(), config.log_level)
 
     fetcher = Fetcher(config, path_manager)
-    # fetcher.fetch_all()
-    cl1_fetch = CL1Fetcher(config, path_manager)
-    cl1_fetch.fetch()
+    cl2_fetcher = CL2Fetcher(config, path_manager)
+    cl2_fetcher.fetch()
+    jt_fetcher = JTFetcher(config, path_manager)
+    jt_fetcher.fetch()

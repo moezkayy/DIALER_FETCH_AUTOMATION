@@ -19,8 +19,10 @@ class PathManager:
     ├── raw/
     │   ├── workdialers/
     │   ├── cl1/
+    │   ├── cl2/
     │   ├── jt/
-    │   └── threeway/
+    │   ├── threeway/
+    │   └── omni/
     ├── transformed/
     └── logs/
     """
@@ -46,8 +48,10 @@ class PathManager:
             self.get_raw_dir(),
             self.get_raw_workdialers_dir(),
             self.get_raw_cl1_dir(),
+            self.get_raw_cl2_dir(),
             self.get_raw_jt_dir(),
             self.get_raw_threeway_dir(),
+            self.get_raw_omni_dir(),
             self.get_transformed_dir(),
             self.get_logs_dir(),
         ]
@@ -87,6 +91,10 @@ class PathManager:
         """Get raw CL1 directory."""
         return self.get_raw_dir() / "cl1"
 
+    def get_raw_cl2_dir(self) -> Path:
+        """Get raw CL2 directory."""
+        return self.get_raw_dir() / "cl2"
+
     def get_raw_jt_dir(self) -> Path:
         """Get raw JT directory."""
         return self.get_raw_dir() / "jt"
@@ -94,6 +102,10 @@ class PathManager:
     def get_raw_threeway_dir(self) -> Path:
         """Get raw ThreeWay directory."""
         return self.get_raw_dir() / "threeway"
+
+    def get_raw_omni_dir(self) -> Path:
+        """Get raw Omni directory."""
+        return self.get_raw_dir() / "omni"
 
     # ========================================================================
     # SPECIFIC FILE PATHS - RAW
@@ -121,6 +133,10 @@ class PathManager:
         """Get path for raw CL1 file."""
         return self.get_raw_cl1_dir() / f"cl1_{self.date}.csv"
 
+    def get_raw_cl2_file(self) -> Path:
+        """Get path for raw CL2 file."""
+        return self.get_raw_cl2_dir() / f"cl2_{self.date}.csv"
+
     def get_raw_jt_file(self) -> Path:
         """Get path for raw JT file."""
         return self.get_raw_jt_dir() / f"jt_{self.date}.csv"
@@ -132,6 +148,14 @@ class PathManager:
     def get_parsed_threeway_file(self) -> Path:
         """Get path for parsed ThreeWay file."""
         return self.get_raw_threeway_dir() / f"threeway_parsed_{self.date}.csv"
+
+    def get_raw_omni_file(self) -> Path:
+        """Get path for raw Omni file."""
+        return self.get_raw_omni_dir() / f"omni_{self.date}.csv"
+
+    def get_omni_download_dir(self) -> Path:
+        """Get Omni download directory."""
+        return self.get_raw_omni_dir() / "downloads"
 
     # ========================================================================
     # SPECIFIC FILE PATHS - TRANSFORMED
@@ -145,6 +169,10 @@ class PathManager:
         """Get path for transformed CL1 data."""
         return self.get_transformed_dir() / "cl1_transformed.csv"
 
+    def get_transformed_cl2_file(self) -> Path:
+        """Get path for transformed CL2 data."""
+        return self.get_transformed_dir() / "cl2_transformed.csv"
+
     def get_transformed_jt_file(self) -> Path:
         """Get path for transformed JT data."""
         return self.get_transformed_dir() / "jt_transformed.csv"
@@ -152,6 +180,10 @@ class PathManager:
     def get_transformed_threeway_file(self) -> Path:
         """Get path for transformed ThreeWay data."""
         return self.get_transformed_dir() / "threeway_transformed.csv"
+
+    def get_transformed_omni_file(self) -> Path:
+        """Get path for transformed Omni data."""
+        return self.get_transformed_dir() / "omni_transformed.csv"
 
     def get_combined_transformed_file(self) -> Path:
         """Get path for combined transformed data."""
@@ -194,8 +226,10 @@ class PathManager:
             "Raw Data:",
             f"  - Workdialers: {self.get_raw_workdialers_dir().relative_to(self.base_dir)}",
             f"  - CL1:         {self.get_raw_cl1_dir().relative_to(self.base_dir)}",
+            f"  - CL2:         {self.get_raw_cl2_dir().relative_to(self.base_dir)}",
             f"  - JT:          {self.get_raw_jt_dir().relative_to(self.base_dir)}",
             f"  - ThreeWay:    {self.get_raw_threeway_dir().relative_to(self.base_dir)}",
+            f"  - Omni:        {self.get_raw_omni_dir().relative_to(self.base_dir)}",
             "",
             "Transformed Data:",
             f"  - Directory:   {self.get_transformed_dir().relative_to(self.base_dir)}",
@@ -223,5 +257,7 @@ if __name__ == "__main__":
     print("\nExample paths:")
     print(f"Raw workdialer 1: {pm.get_raw_workdialer_call_report('1')}")
     print(f"Raw CL1:          {pm.get_raw_cl1_file()}")
+    print(f"Raw CL2:          {pm.get_raw_cl2_file()}")
+    print(f"Raw Omni:         {pm.get_raw_omni_file()}")
     print(f"Transformed:      {pm.get_transformed_workdialers_file()}")
     print(f"Fetch log:        {pm.get_fetch_log()}")

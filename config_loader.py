@@ -37,6 +37,17 @@ class WorkdialersConfig:
 
 
 @dataclass
+class OmniConfig:
+    """Configuration for Omni fetching."""
+    enabled: bool
+    username: Optional[str] = None
+    password: Optional[str] = None
+    url: Optional[str] = None
+    download_path: Optional[str] = None
+    max_attempts: int = 6
+
+
+@dataclass
 class Config:
     """Master configuration for the entire pipeline."""
 
@@ -51,8 +62,10 @@ class Config:
     # Sources
     workdialers: WorkdialersConfig
     cl1: SourceConfig
+    cl2: SourceConfig
     jt: SourceConfig
     threeway: SourceConfig
+    omni: OmniConfig
 
     # Behavior
     headless_browser: bool
@@ -69,10 +82,14 @@ class Config:
             sources.append("workdialers")
         if self.cl1.enabled:
             sources.append("cl1")
+        if self.cl2.enabled:
+            sources.append("cl2")
         if self.jt.enabled:
             sources.append("jt")
         if self.threeway.enabled:
             sources.append("threeway")
+        if self.omni.enabled:
+            sources.append("omni")
         return sources
 
     def summary(self) -> str:
@@ -130,8 +147,10 @@ def load_config(config_file: str = "config.yaml") -> Config:
     paths = yaml_config.get('paths', {})
     workdialers_cfg = yaml_config.get('workdialers', {})
     cl1_cfg = yaml_config.get('cl1', {})
+    cl2_cfg = yaml_config.get('cl2', {})
     jt_cfg = yaml_config.get('jt', {})
     threeway_cfg = yaml_config.get('threeway', {})
+    omni_cfg = yaml_config.get('omni', {})
     browser_cfg = yaml_config.get('browser', {})
     requests_cfg = yaml_config.get('requests', {})
     validation_cfg = yaml_config.get('validation', {})
@@ -169,6 +188,14 @@ def load_config(config_file: str = "config.yaml") -> Config:
             url=cl1_cfg.get('url')
         ),
 
+        # CL2
+        cl2=SourceConfig(
+            enabled=cl2_cfg.get('enabled', False),
+            username=cl2_cfg.get('username'),
+            password=cl2_cfg.get('password'),
+            url=cl2_cfg.get('url')
+        ),
+
         # JT
         jt=SourceConfig(
             enabled=jt_cfg.get('enabled', False),
@@ -183,6 +210,16 @@ def load_config(config_file: str = "config.yaml") -> Config:
             username=threeway_cfg.get('username'),
             password=threeway_cfg.get('password'),
             url=threeway_cfg.get('url')
+        ),
+
+        # Omni
+        omni=OmniConfig(
+            enabled=omni_cfg.get('enabled', False),
+            username=omni_cfg.get('username'),
+            password=omni_cfg.get('password'),
+            url=omni_cfg.get('url'),
+            download_path=omni_cfg.get('download_path'),
+            max_attempts=omni_cfg.get('max_attempts', 6)
         ),
 
         # Browser

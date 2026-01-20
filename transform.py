@@ -66,7 +66,6 @@ class DataCleaner:
     def clean_phone_number(phone: Any) -> str:
         """
         Clean and normalize phone number.
-
         Args:
             phone: Phone number (any type)
 
